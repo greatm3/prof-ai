@@ -1,0 +1,6 @@
+node_modules/
+.env
+prof.db
+prof.db-shm
+prof.db-wal
+test.js
