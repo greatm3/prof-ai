@@ -5,6 +5,7 @@ import { parseQuiz } from "./parsers.js";
 import { getChat, activeQuizzes } from "./state.js";
 import { splitLong } from "./telegram.js";
 import { createSession, completeSession, logAnswer } from "./db.js";
+import { logMessage } from "./db.js";
 
 export function buildQuizKeyboard(index) {
     return {
@@ -156,6 +157,12 @@ export async function triggerQuiz(
         };
         activeQuizzes.set(chatId, quiz);
         await sendQuizQuestion(chatId, quiz);
+        logMessage({
+            chatId,
+            userId,
+            role: "user",
+            content: `[Started quiz: ${sessionTopic}]`,
+        });
     } catch (err) {
         if (status)
             await bot.deleteMessage(chatId, status.message_id).catch(() => {});
@@ -261,6 +268,12 @@ async function finishQuiz(chatId, quiz) {
         await sendRichOrFallback(chatId, part).catch(() => {});
     }
 
+    logMessage({
+        chatId: quiz.chatId,
+        userId: null,
+        role: "assistant",
+        content: `Quiz complete: ${quiz.score}/${total} on ${quiz.topic}`,
+    });
     completeSession(quiz.sessionId, quiz.score);
     activeQuizzes.delete(chatId);
     console.log(`Quiz ${chatId}: finished ${quiz.score}/${total}`);

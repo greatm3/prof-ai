@@ -12,11 +12,11 @@ import {
 } from "./intents.js";
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
 import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
-import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
-import { upsertUser } from "./db.js";
+import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js"; 
 import { buildProgressReport } from "./analytics.js";
 import { sendRichOrFallback } from "./telegram.js";
 import { MAX_CONTEXT_MESSAGES, PHOTO_TTL_MS } from "./config.js";
+import { upsertUser, logMessage } from "./db.js";
 
 function trimContext(messages) {
     if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
@@ -286,6 +286,14 @@ export function registerHandlers() {
                 ],
             });
 
+            logMessage({
+                chatId,
+                userId,
+                role: "user",
+                content: cleanText || "[photo]",
+                hasPhoto: true,
+            });
+
             bot.sendChatAction(chatId, "typing").catch(() => {});
             const typing = setInterval(
                 () => bot.sendChatAction(chatId, "typing").catch(() => {}),
@@ -303,6 +311,12 @@ export function registerHandlers() {
                         content: result.content,
                     });
                     chat.lastReasoning = result.reasoning;
+                    logMessage({
+                        chatId,
+                        userId,
+                        role: "assistant",
+                        content: result.content,
+                    });
                 } else chat.messages.pop();
             } catch (err) {
                 clearInterval(typing);
@@ -400,6 +414,7 @@ export function registerHandlers() {
         // Normal chat
         console.log(`Chat ${chatId}: normal → "${cleanText.slice(0, 50)}"`);
         chat.messages.push({ role: "user", content: cleanText });
+        logMessage({ chatId, userId, role: "user", content: cleanText });
 
         bot.sendChatAction(chatId, "typing").catch(() => {});
         const typing = setInterval(
@@ -418,6 +433,12 @@ export function registerHandlers() {
                     content: result.content,
                 });
                 chat.lastReasoning = result.reasoning;
+                logMessage({
+                    chatId,
+                    userId,
+                    role: "assistant",
+                    content: result.content,
+                });
             } else chat.messages.pop();
         } catch (err) {
             clearInterval(typing);

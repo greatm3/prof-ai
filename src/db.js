@@ -41,9 +41,21 @@ db.exec(`
     FOREIGN KEY (session_id) REFERENCES sessions(id)
   );
 
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER,
+    role TEXT NOT NULL,
+    content TEXT,
+    has_photo INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_answers_user ON answers(user_id);
   CREATE INDEX IF NOT EXISTS idx_answers_topic ON answers(user_id, topic);
   CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(started_by_user_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at);
 `);
 
 // ─── Prepared statements ─────────────────────────────
@@ -70,7 +82,12 @@ const logAnswerStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?)
 `);
 
-// ─── Exports ─────────────────────────────────────────
+const logMessageStmt = db.prepare(`
+  INSERT INTO messages (chat_id, user_id, role, content, has_photo, created_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+
+// ─── Writes ──────────────────────────────────────────
 export function upsertUser(user) {
     if (!user?.id) return;
     upsertUserStmt.run(
@@ -123,49 +140,53 @@ export function logAnswer({
     );
 }
 
-export function getUserTopicStats(userId, minAnswers = 3) {
-    return db
-        .prepare(
-            `
-    SELECT topic,
-           COUNT(*) AS total,
-           SUM(is_correct) AS correct,
-           ROUND(SUM(is_correct) * 100.0 / COUNT(*), 1) AS accuracy
-    FROM answers
-    WHERE user_id = ? AND topic IS NOT NULL
-    GROUP BY topic
-    HAVING total >= ?
-    ORDER BY accuracy DESC
-  `,
-        )
-        .all(userId, minAnswers);
-}
-
-export function getUserOverall(userId) {
-    return (
-        db
-            .prepare(
-                `
-    SELECT COUNT(*) AS total_answers,
-           COALESCE(SUM(is_correct), 0) AS total_correct,
-           ROUND(COALESCE(SUM(is_correct) * 100.0 / NULLIF(COUNT(*), 0), 0), 1) AS accuracy
-    FROM answers
-    WHERE user_id = ?
-  `,
-            )
-            .get(userId) || { total_answers: 0, total_correct: 0, accuracy: 0 }
+export function logMessage({
+    chatId,
+    userId,
+    role,
+    content,
+    hasPhoto = false,
+}) {
+    logMessageStmt.run(
+        chatId,
+        userId || null,
+        role,
+        content || "",
+        hasPhoto ? 1 : 0,
+        Date.now(),
     );
 }
 
-export function getUserSessionCount(userId) {
-    return db
+// ─── User-level reads ────────────────────────────────
+export function getUserOverall(userId) {
+    const r = db
         .prepare(
             `
+    SELECT COUNT(*) AS total, COALESCE(SUM(is_correct), 0) AS correct
+    FROM answers WHERE user_id = ?
+  `,
+        )
+        .get(userId);
+    const total = Number(r?.total || 0);
+    const correct = Number(r?.correct || 0);
+    return {
+        total_answers: total,
+        total_correct: correct,
+        accuracy: total > 0 ? Math.round((correct / total) * 1000) / 10 : 0,
+    };
+}
+
+export function getUserSessionCount(userId) {
+    return Number(
+        db
+            .prepare(
+                `
     SELECT COUNT(*) AS n FROM sessions
     WHERE started_by_user_id = ? AND completed_at IS NOT NULL
   `,
-        )
-        .get(userId).n;
+            )
+            .get(userId)?.n || 0,
+    );
 }
 
 export function getUserLastSession(userId) {
@@ -181,78 +202,199 @@ export function getUserLastSession(userId) {
         .get(userId);
 }
 
-// ─── Admin queries ────────────────────────────────────
+export function getUserTopicStats(userId, minAnswers = 3) {
+    return db
+        .prepare(
+            `
+    SELECT topic, COUNT(*) AS total, SUM(is_correct) AS correct
+    FROM answers
+    WHERE user_id = ? AND topic IS NOT NULL
+    GROUP BY topic
+    HAVING total >= ?
+    ORDER BY correct * 1.0 / total DESC
+  `,
+        )
+        .all(userId, minAnswers)
+        .map((t) => ({
+            topic: t.topic,
+            total: Number(t.total),
+            correct: Number(t.correct),
+            accuracy:
+                Number(t.total) > 0
+                    ? Math.round((Number(t.correct) / Number(t.total)) * 1000) /
+                      10
+                    : 0,
+        }));
+}
+
+// ─── Admin reads (simple, single-table queries) ──────
 export function adminGlobalStats() {
     return {
-        users: db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
-        sessions: db
-            .prepare(
-                "SELECT COUNT(*) AS n FROM sessions WHERE completed_at IS NOT NULL",
-            )
-            .get().n,
-        answers: db.prepare("SELECT COUNT(*) AS n FROM answers").get().n,
-        active_24h: db
-            .prepare(
-                `SELECT COUNT(DISTINCT user_id) AS n FROM users WHERE last_seen > ?`,
-            )
-            .get(Date.now() - 24 * 60 * 60 * 1000).n,
+        users: Number(
+            db.prepare("SELECT COUNT(*) AS n FROM users").get()?.n || 0,
+        ),
+        sessions: Number(
+            db
+                .prepare(
+                    "SELECT COUNT(*) AS n FROM sessions WHERE completed_at IS NOT NULL",
+                )
+                .get()?.n || 0,
+        ),
+        answers: Number(
+            db.prepare("SELECT COUNT(*) AS n FROM answers").get()?.n || 0,
+        ),
+        messages: Number(
+            db.prepare("SELECT COUNT(*) AS n FROM messages").get()?.n || 0,
+        ),
+        active_24h: Number(
+            db
+                .prepare("SELECT COUNT(*) AS n FROM users WHERE last_seen > ?")
+                .get(Date.now() - 24 * 60 * 60 * 1000)?.n || 0,
+        ),
     };
 }
 
 export function adminUserList() {
-    return db
+    const rows = db
         .prepare(
             `
-    SELECT u.user_id, u.username, u.first_name, u.last_seen,
-           (SELECT COUNT(*) FROM answers a WHERE a.user_id = u.user_id) AS answers,
-           (SELECT ROUND(COALESCE(SUM(is_correct) * 100.0 / NULLIF(COUNT(*), 0), 0), 1)
-              FROM answers a WHERE a.user_id = u.user_id) AS accuracy
-    FROM users u
-    ORDER BY u.last_seen DESC
-    LIMIT 100
+    SELECT user_id, username, first_name, first_seen, last_seen
+    FROM users
+    ORDER BY last_seen DESC
+    LIMIT 200
   `,
         )
         .all();
+
+    // Enrich each row with simple aggregate queries (safe, no joins)
+    return rows.map((u) => {
+        const a = db
+            .prepare(
+                `
+      SELECT COUNT(*) AS total, COALESCE(SUM(is_correct), 0) AS correct
+      FROM answers WHERE user_id = ?
+    `,
+            )
+            .get(u.user_id);
+        const s = db
+            .prepare(
+                `
+      SELECT COUNT(*) AS n FROM sessions
+      WHERE started_by_user_id = ? AND completed_at IS NOT NULL
+    `,
+            )
+            .get(u.user_id);
+        const m = db
+            .prepare(
+                `
+      SELECT COUNT(*) AS n FROM messages WHERE user_id = ?
+    `,
+            )
+            .get(u.user_id);
+        const total = Number(a?.total || 0);
+        const correct = Number(a?.correct || 0);
+        return {
+            user_id: u.user_id,
+            username: u.username,
+            first_name: u.first_name,
+            first_seen: u.first_seen,
+            last_seen: u.last_seen,
+            answers: total,
+            correct,
+            accuracy: total > 0 ? Math.round((correct / total) * 1000) / 10 : 0,
+            sessions: Number(s?.n || 0),
+            messages: Number(m?.n || 0),
+        };
+    });
 }
 
 export function adminRecentSessions(limit = 50) {
-    return db
+    const rows = db
         .prepare(
             `
-    SELECT s.id, s.type, s.topic, s.score, s.total_questions, s.created_at, s.completed_at,
-           u.username, u.first_name
-    FROM sessions s LEFT JOIN users u ON u.user_id = s.started_by_user_id
-    WHERE s.completed_at IS NOT NULL
-    ORDER BY s.completed_at DESC
+    SELECT id, started_by_user_id, type, topic, score, total_questions, created_at, completed_at
+    FROM sessions
+    WHERE completed_at IS NOT NULL
+    ORDER BY completed_at DESC
     LIMIT ?
   `,
         )
         .all(limit);
+
+    return rows.map((s) => {
+        const u = db
+            .prepare("SELECT username, first_name FROM users WHERE user_id = ?")
+            .get(s.started_by_user_id);
+        return {
+            ...s,
+            username: u?.username || null,
+            first_name: u?.first_name || null,
+        };
+    });
 }
 
 export function adminUserDetail(userId) {
     const user = db
-        .prepare("SELECT * FROM users WHERE user_id = ?")
+        .prepare(
+            `
+    SELECT user_id, username, first_name, first_seen, last_seen
+    FROM users WHERE user_id = ?
+  `,
+        )
         .get(userId);
     if (!user) return null;
+
+    const overall = getUserOverall(userId);
+    const sessionsCount = getUserSessionCount(userId);
+
     const topics = db
         .prepare(
             `
-    SELECT topic, COUNT(*) AS total, SUM(is_correct) AS correct,
-           ROUND(SUM(is_correct) * 100.0 / COUNT(*), 1) AS accuracy
+    SELECT topic, COUNT(*) AS total, SUM(is_correct) AS correct
     FROM answers WHERE user_id = ? AND topic IS NOT NULL
-    GROUP BY topic ORDER BY accuracy DESC
+    GROUP BY topic ORDER BY total DESC
   `,
         )
-        .all(userId);
+        .all(userId)
+        .map((t) => ({
+            topic: t.topic,
+            total: Number(t.total),
+            correct: Number(t.correct),
+            accuracy:
+                Number(t.total) > 0
+                    ? Math.round((Number(t.correct) / Number(t.total)) * 1000) /
+                      10
+                    : 0,
+        }));
+
     const sessions = db
         .prepare(
             `
-    SELECT id, type, topic, score, total_questions, completed_at
+    SELECT id, type, topic, score, total_questions, created_at, completed_at
     FROM sessions WHERE started_by_user_id = ? AND completed_at IS NOT NULL
-    ORDER BY completed_at DESC LIMIT 20
+    ORDER BY completed_at DESC LIMIT 30
   `,
         )
         .all(userId);
-    return { user, topics, sessions };
+
+    const messages = db
+        .prepare(
+            `
+    SELECT id, role, content, has_photo, created_at
+    FROM messages WHERE user_id = ?
+    ORDER BY created_at DESC LIMIT 100
+  `,
+        )
+        .all(userId);
+
+    return {
+        user,
+        stats: {
+            ...overall,
+            sessions: sessionsCount,
+        },
+        topics,
+        sessions,
+        messages,
+    };
 }
