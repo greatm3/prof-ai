@@ -55,7 +55,7 @@ export async function buildProgressReport(userId) {
     return out;
 }
 
-export function buildMiniStats(userId) {
+export async function buildMiniStats(userId) {
     const overall = await getUserOverall(userId);
     if (overall.total_answers === 0) return null;
     return `${overall.total_correct}/${overall.total_answers} correct (${overall.accuracy}%)`;

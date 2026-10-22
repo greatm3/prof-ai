@@ -120,7 +120,7 @@ export function registerHandlers() {
         }).catch(() => {});
     });
 
-    bot.onText(/^\/progress/, (msg) => {
+    bot.onText(/^\/progress/, async (msg) => {
         await upsertUser(msg.from);
         sendRichOrFallback(msg.chat.id, buildProgressReport(msg.from.id), {
             reply_to_message_id: msg.message_id,
@@ -173,7 +173,7 @@ export function registerHandlers() {
         ).catch(() => {});
     });
 
-    bot.onText(/^\/quiz(?:\s+(.+))?/, (msg, match) => {
+    bot.onText(/^\/quiz(?:\s+(.+))?/, async (msg, match) => {
         await upsertUser(msg.from);
         triggerQuiz(
             msg.chat.id,
@@ -183,7 +183,7 @@ export function registerHandlers() {
         );
     });
 
-    bot.onText(/^\/flashcards?(?:\s+(.+))?/, (msg, match) => {
+    bot.onText(/^\/flashcards?(?:\s+(.+))?/, async (msg, match) => {
         await upsertUser(msg.from);
         triggerFlashcards(
             msg.chat.id,
