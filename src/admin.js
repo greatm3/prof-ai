@@ -47,7 +47,7 @@ function sendJson(res, status, data) {
 }
 
 export function startAdminServer() {
-    const server = http.createServer((req, res) => {
+    const server = http.createServer(async (req, res) => {
         const t0 = Date.now();
         const url = new URL(req.url, `http://${req.headers.host}`);
         const token = url.searchParams.get("token");
@@ -76,17 +76,17 @@ export function startAdminServer() {
 
         try {
             if (url.pathname === "/api/stats")
-                return sendJson(res, 200, adminGlobalStats());
+                return sendJson(res, 200, await adminGlobalStats());
             if (url.pathname === "/api/users")
-                return sendJson(res, 200, adminUserList());
+                return sendJson(res, 200, await adminUserList());
             if (url.pathname === "/api/sessions")
-                return sendJson(res, 200, adminRecentSessions(50));
+                return sendJson(res, 200, await adminRecentSessions(50));
             if (url.pathname === "/api/debug")
-                return sendJson(res, 200, adminDebug());
+                return sendJson(res, 200, await adminDebug());
 
             const m = url.pathname.match(/^\/api\/user\/(\d+)$/);
             if (m) {
-                const detail = adminUserDetail(Number(m[1]));
+                const detail = await adminUserDetail(Number(m[1]));
                 if (!detail)
                     return sendJson(res, 404, { error: "user not found" });
                 return sendJson(res, 200, detail);

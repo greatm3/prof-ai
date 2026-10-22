@@ -63,13 +63,13 @@ async function finishDeck(chatId, deck) {
         `Want to test yourself? Just say: "quiz me on ${deck.topic}"\n\n` +
         `Or ask "how am I doing?" for your progress.`;
     await sendRichOrFallback(chatId, body).catch(() => {});
-    logMessage({
+    await logMessage({
         chatId,
         userId: null,
         role: "assistant",
         content: `Deck complete: ${deck.cards.length} cards on ${deck.topic}`,
     });
-    completeSession(deck.sessionId, null);
+    await completeSession(deck.sessionId, null);
     activeDecks.delete(chatId);
     console.log(`Deck ${chatId}: finished`);
 }
@@ -186,7 +186,7 @@ export async function triggerFlashcards(
         if (status)
             await bot.deleteMessage(chatId, status.message_id).catch(() => {});
 
-        const sessionId = createSession({
+        const sessionId = await createSession({
             chatId,
             userId,
             type: "flashcards",
@@ -207,7 +207,7 @@ export async function triggerFlashcards(
         };
         activeDecks.set(chatId, deck);
         await sendFront(chatId, deck);
-        logMessage({
+        await logMessage({
             chatId,
             userId,
             role: "user",
@@ -262,7 +262,7 @@ export async function handleFlashcardAction(query) {
         deck.index++;
         if (deck.index < deck.cards.length) {
             await sendFront(chatId, deck);
-            logMessage({
+            await logMessage({
                 chatId,
                 userId,
                 role: "user",

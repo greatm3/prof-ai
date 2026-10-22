@@ -121,7 +121,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/progress/, (msg) => {
-        upsertUser(msg.from);
+        await upsertUser(msg.from);
         sendRichOrFallback(msg.chat.id, buildProgressReport(msg.from.id), {
             reply_to_message_id: msg.message_id,
             allow_sending_without_reply: true,
@@ -174,7 +174,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/quiz(?:\s+(.+))?/, (msg, match) => {
-        upsertUser(msg.from);
+        await upsertUser(msg.from);
         triggerQuiz(
             msg.chat.id,
             msg.message_id,
@@ -184,7 +184,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/flashcards?(?:\s+(.+))?/, (msg, match) => {
-        upsertUser(msg.from);
+        await upsertUser(msg.from);
         triggerFlashcards(
             msg.chat.id,
             msg.message_id,
@@ -197,7 +197,7 @@ export function registerHandlers() {
     bot.on("callback_query", async (query) => {
         const data = query.data;
         if (!data) return;
-        if (query.from) upsertUser(query.from);
+        if (query.from) await upsertUser(query.from);
         if (data.startsWith("flash:")) return handleFlashcardAction(query);
         if (data.startsWith("quiz:")) return handleQuizAnswer(query);
     });
@@ -223,7 +223,7 @@ export function registerHandlers() {
 
         if (!rawText && !isPhoto && !isVoice) return;
 
-        upsertUser(msg.from);
+        await upsertUser(msg.from);
         const userId = msg.from.id;
         const chat = getChat(chatId);
         let cleanText = rawText
@@ -288,7 +288,7 @@ export function registerHandlers() {
                 })
                 .catch(() => {});
 
-            logMessage({
+            await logMessage({
                 chatId,
                 userId,
                 role: "user",
@@ -368,7 +368,7 @@ export function registerHandlers() {
                 ],
             });
 
-            logMessage({
+            await logMessage({
                 chatId,
                 userId,
                 role: "user",
@@ -393,7 +393,7 @@ export function registerHandlers() {
                         content: result.content,
                     });
                     chat.lastReasoning = result.reasoning;
-                    logMessage({
+                    await logMessage({
                         chatId,
                         userId,
                         role: "assistant",
@@ -435,7 +435,7 @@ export function registerHandlers() {
                 cleanText,
             )
         ) {
-            return sendRichOrFallback(chatId, buildProgressReport(userId), {
+            return sendRichOrFallback(chatId, await buildProgressReport(userId), {
                 reply_to_message_id: msg.message_id,
                 allow_sending_without_reply: true,
             }).catch(() => {});
@@ -585,7 +585,7 @@ export function registerHandlers() {
         // Normal chat
         console.log(`Chat ${chatId}: normal → "${cleanText.slice(0, 50)}"`);
         chat.messages.push({ role: "user", content: cleanText });
-        logMessage({ chatId, userId, role: "user", content: cleanText });
+        await logMessage({ chatId, userId, role: "user", content: cleanText });
 
         bot.sendChatAction(chatId, "typing").catch(() => {});
         const typing = setInterval(
@@ -604,7 +604,7 @@ export function registerHandlers() {
                     content: result.content,
                 });
                 chat.lastReasoning = result.reasoning;
-                logMessage({
+                await logMessage({
                     chatId,
                     userId,
                     role: "assistant",

@@ -139,7 +139,7 @@ export async function triggerQuiz(
             await bot.deleteMessage(chatId, status.message_id).catch(() => {});
 
         const trimmed = questions.slice(0, 10);
-        const sessionId = createSession({
+        const sessionId = await createSession({
             chatId,
             userId,
             type: "quiz",
@@ -160,7 +160,7 @@ export async function triggerQuiz(
         };
         activeQuizzes.set(chatId, quiz);
         await sendQuizQuestion(chatId, quiz);
-        logMessage({
+        await logMessage({
             chatId,
             userId,
             role: "user",
@@ -202,7 +202,7 @@ export async function handleQuizAnswer(query) {
 
     // Log every answer against the actual tapper, not just the starter
     if (userId) {
-        logAnswer({
+        await logAnswer({
             sessionId: quiz.sessionId,
             userId,
             questionText: q.text,
@@ -271,13 +271,13 @@ async function finishQuiz(chatId, quiz) {
         await sendRichOrFallback(chatId, part).catch(() => {});
     }
 
-    logMessage({
+    await logMessage({
         chatId: quiz.chatId,
         userId: null,
         role: "assistant",
         content: `Quiz complete: ${quiz.score}/${total} on ${quiz.topic}`,
     });
-    completeSession(quiz.sessionId, quiz.score);
+    await completeSession(quiz.sessionId, quiz.score);
     activeQuizzes.delete(chatId);
     console.log(`Quiz ${chatId}: finished ${quiz.score}/${total}`);
 }
