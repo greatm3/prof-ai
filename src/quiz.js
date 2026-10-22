@@ -1,7 +1,7 @@
 import { bot, sendRichOrFallback } from "./telegram.js";
 import { generateSilent, generateExplanations } from "./nim.js";
 import { SYSTEM_PROMPT, quizPrompt, explanationsPrompt } from "./prompts.js";
-import { parseQuiz } from "./parsers.js";
+import { parseQuiz, normalizeLatex } from "./parsers.js";
 import { getChat, activeQuizzes } from "./state.js";
 import { splitLong } from "./telegram.js";
 import { createSession, completeSession, logAnswer } from "./db.js";
@@ -24,8 +24,11 @@ export async function sendQuizQuestion(chatId, quiz) {
     const q = quiz.questions[quiz.index];
     const body =
         `**Question ${quiz.index + 1} of ${quiz.questions.length}**\n\n` +
-        `${q.text}\n\n` +
-        `A) ${q.options.A}\nB) ${q.options.B}\nC) ${q.options.C}\nD) ${q.options.D}`;
+        `${normalizeLatex(q.text)}\n\n` +
+        `A) ${normalizeLatex(q.options.A)}\n` +
+        `B) ${normalizeLatex(q.options.B)}\n` +
+        `C) ${normalizeLatex(q.options.C)}\n` +
+        `D) ${normalizeLatex(q.options.D)}`;
 
     const sent = await sendRichOrFallback(chatId, body, {
         reply_markup: buildQuizKeyboard(quiz.index),

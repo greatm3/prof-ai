@@ -472,9 +472,24 @@ export function registerHandlers() {
                 .catch(() => null);
 
             try {
+                function derivePdfTitle(chatState, currentText) {
+                    const lastUser = [...chatState.messages]
+                        .reverse()
+                        .find(
+                            (m) =>
+                                m.role === "user" &&
+                                typeof m.content === "string" &&
+                                m.content.trim() &&
+                                m.content.trim() !== currentText.trim(),
+                        );
+                    const raw =
+                        lastUser?.content?.trim() || "Prof · Study Sheet";
+                    const title = raw.charAt(0).toUpperCase() + raw.slice(1);
+                    return title.length > 80 ? title.slice(0, 77) + "…" : title;
+                }
+
                 const buffer = await generateStudyPdf({
-                    title:
-                        cleanText.replace(/@\w+/g, "").trim() || "Study Sheet",
+                    title: derivePdfTitle(chatState, cleanText),
                     markdown: lastAssistant.content,
                 });
 
