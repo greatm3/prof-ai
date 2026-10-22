@@ -1,5 +1,6 @@
 node_modules/
 .env
+data/
 prof.db
 prof.db-shm
 prof.db-wal
