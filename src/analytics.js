@@ -8,17 +8,17 @@ import {
 const STRONG_THRESHOLD = 80;
 const WEAK_THRESHOLD = 60;
 
-export function buildProgressReport(userId) {
-    const overall = getUserOverall(userId);
+export async function buildProgressReport(userId) {
+    const overall = await getUserOverall(userId);
     if (overall.total_answers === 0) {
         return `📊 No stats yet.\n\nTake a quiz or review a flashcard deck first, then ask me "how am I doing?"`;
     }
 
-    const quizzes = getUserSessionCount(userId);
-    const topics = getUserTopicStats(userId, 3);
+    const quizzes = await getUserSessionCount(userId);
+    const topics = await getUserTopicStats(userId, 3);
     const strengths = topics.filter((t) => t.accuracy >= STRONG_THRESHOLD);
     const weaknesses = topics.filter((t) => t.accuracy < WEAK_THRESHOLD);
-    const lastSession = getUserLastSession(userId);
+    const lastSession = await getUserLastSession(userId);
 
     let out = `📊 **Your progress**\n\n`;
     out += `Overall: ${overall.accuracy}% across ${overall.total_answers} questions\n`;
@@ -56,7 +56,7 @@ export function buildProgressReport(userId) {
 }
 
 export function buildMiniStats(userId) {
-    const overall = getUserOverall(userId);
+    const overall = await getUserOverall(userId);
     if (overall.total_answers === 0) return null;
     return `${overall.total_correct}/${overall.total_answers} correct (${overall.accuracy}%)`;
 }

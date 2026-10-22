@@ -10,6 +10,7 @@
   "keywords": [],
   "dependencies": {
     "@borodin/mdgram": "^1.2.0",
+    "@libsql/client": "^0.18.0",
     "@nemu-ai/pdf": "^1.5.5",
     "better-sqlite3": "^11.10.0",
     "dotenv": "^16.4.5",
