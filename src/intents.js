@@ -95,39 +95,12 @@ function cleanTopic(raw) {
         .trim();
 }
 
-export function detectImageIntent(text) {
-    if (
-        !/\b(?:draw|sketch|illustrate|generate\s+(?:a\s+)?(?:diagram|image|picture)|create\s+(?:a\s+)?(?:diagram|image|picture)|show\s+me\s+(?:a\s+)?(?:diagram|drawing|sketch)|make\s+(?:a\s+)?(?:diagram|drawing|sketch))\b/i.test(
-            text,
-        )
-    ) {
-        return null;
-    }
-    if (/\b(?:quiz|test|flashcard)\b/i.test(text)) return null;
-
-    let m = text.match(
-        /\b(?:draw|sketch|illustrate)\s+(?:a|an|the)?\s*(.+?)(?:[.!?]|$)/i,
-    );
-    if (m) {
-        const t = cleanTopic(m[1]);
-        if (t.length > 2) return t;
-    }
-
-    m = text.match(
-        /\b(?:diagram|drawing|sketch|image|picture)\s+(?:of|for|showing)\s+(.+?)(?:[.!?]|$)/i,
-    );
-    if (m) {
-        const t = cleanTopic(m[1]);
-        if (t.length > 2) return t;
-    }
-
-    m = text.match(
-        /\b(?:show\s+me|make|create|generate)\s+(?:a|an)?\s*(?:diagram|drawing|sketch|image|picture)\s+(?:of|for|showing)?\s*(.+?)(?:[.!?]|$)/i,
-    );
-    if (m) {
-        const t = cleanTopic(m[1]);
-        if (t.length > 2) return t;
-    }
-
+export function detectPdfIntent(text) {
+  // "make a pdf", "summary sheet", "study notes as pdf", "download this as pdf"
+  if (!/\b(?:pdf|study\s+sheet|summary\s+sheet|notes\s+sheet|printable)\b/i.test(text)) {
     return null;
+  }
+  // Don't hijack quiz/flashcard requests
+  if (/\b(?:quiz|test|flashcard)\b/i.test(text)) return null;
+  return text; // the caller will pass the previous assistant message as content
 }

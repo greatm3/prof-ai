@@ -8,7 +8,8 @@ import {
 import { SYSTEM_PROMPT } from "./prompts.js";
 import {
     detectQuizIntent,
-    detectFlashcardIntent, 
+    detectPdfIntent,
+    detectFlashcardIntent,
     PHOTO_REF,
 } from "./intents.js";
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
@@ -16,12 +17,13 @@ import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
 import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
 import { upsertUser, logMessage } from "./db.js";
 import { buildProgressReport } from "./analytics.js";
-import { downloadVoice, transcribeVoice } from "./voice.js"; 
+import { downloadVoice, transcribeVoice } from "./voice.js";
 import {
     MAX_CONTEXT_MESSAGES,
     PHOTO_TTL_MS,
     VOICE_MAX_SECONDS,
 } from "./config.js";
+import { generateStudyPdf } from "./pdfgen.js";
 
 function trimContext(messages) {
     if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
@@ -439,46 +441,72 @@ export function registerHandlers() {
             }).catch(() => {});
         }
 
-        // Image generation (before quiz/flashcards)
-        const imageTopic = detectImageIntent(cleanText);
-        if (imageTopic !== null) {
-            console.log(`Chat ${chatId}: IMAGE → "${imageTopic}"`);
+        const pdfIntent = detectPdfIntent(cleanText);
+        if (pdfIntent) {
+            const chatState = getChat(chatId);
+            const lastAssistant = [...chatState.messages]
+                .reverse()
+                .find(
+                    (m) =>
+                        m.role === "assistant" && typeof m.content === "string",
+                );
+
+            if (!lastAssistant) {
+                return bot
+                    .sendMessage(
+                        chatId,
+                        "There’s nothing to turn into a PDF yet. Ask me to explain something first, then say “make that a PDF”.",
+                        {
+                            reply_to_message_id: msg.message_id,
+                            allow_sending_without_reply: true,
+                        },
+                    )
+                    .catch(() => {});
+            }
+
             const status = await bot
-                .sendMessage(chatId, `Drawing that for you…`, {
+                .sendMessage(chatId, "Building your study sheet…", {
                     reply_to_message_id: msg.message_id,
                     allow_sending_without_reply: true,
                 })
                 .catch(() => null);
 
             try {
-                const buffer = await generateDiagram(imageTopic);
+                const buffer = await generateStudyPdf({
+                    title:
+                        cleanText.replace(/@\w+/g, "").trim() || "Study Sheet",
+                    markdown: lastAssistant.content,
+                });
+
                 if (status)
                     await bot
                         .deleteMessage(chatId, status.message_id)
                         .catch(() => {});
+
                 await bot
-                    .sendPhoto(chatId, buffer, {
-                        caption: `📐 *${imageTopic}*\n\n_Diagram for illustration — check it against your textbook._`,
-                        parse_mode: "Markdown",
-                        reply_to_message_id: msg.message_id,
-                        allow_sending_without_reply: true,
-                    })
+                    .sendDocument(
+                        chatId,
+                        buffer,
+                        {
+                            caption: "📄 Your study sheet (PDF)",
+                            reply_to_message_id: msg.message_id,
+                            allow_sending_without_reply: true,
+                        },
+                        {
+                            filename: `prof-study-sheet-${Date.now()}.pdf`,
+                            contentType: "application/pdf",
+                        },
+                    )
                     .catch(() => {});
-                logMessage({
-                    chatId,
-                    userId,
-                    role: "assistant",
-                    content: `[Generated diagram: ${imageTopic}]`,
-                });
             } catch (err) {
                 if (status)
                     await bot
                         .deleteMessage(chatId, status.message_id)
                         .catch(() => {});
-                console.error("image gen failed:", err.message);
+                console.error("pdf generation failed:", err.message);
                 bot.sendMessage(
                     chatId,
-                    `I couldn't draw that one — try describing it differently, or ask me to explain it in text.`,
+                    "I couldn’t build the PDF — try again with a shorter explanation.",
                     {
                         reply_to_message_id: msg.message_id,
                         allow_sending_without_reply: true,
