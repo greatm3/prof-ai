@@ -3,7 +3,7 @@ import { mdgramRich } from "@borodin/mdgram";
 import { TELEGRAM_BOT_TOKEN } from "./config.js";
 import { randWord } from "./state.js";
 import { nimStream } from "./nim.js";
-import { alertAdmin } from './alerts.js';
+import { alertAdmin } from "./alerts.js";
 
 export const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 
@@ -69,7 +69,15 @@ export async function streamToTelegram(chatId, replyToId, apiMessages) {
         });
         messageId = initial.message_id;
     } catch (err) {
-        console.error("sendMessage failed:", err.message);
+        clearInterval(thinkTimer);
+        console.error("stream error:", err.message);
+        await alertAdmin("stream", err);
+        await bot
+            .editMessageText(`⚠️ ${err.message.slice(0, 300)}`, {
+                chat_id: chatId,
+                message_id: messageId,
+            })
+            .catch(() => {});
         return { content: "", reasoning: "" };
     }
 
