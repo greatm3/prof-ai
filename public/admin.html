@@ -382,20 +382,49 @@
 
             const $ = (id) => document.getElementById(id);
 
-            async function api(path) {
+            async function api(path, retries = 2) {
                 const sep = path.includes("?") ? "&" : "?";
                 const url = path + sep + "token=" + encodeURIComponent(token);
-                const res = await fetch(url);
-                if (!res.ok) {
-                    const text = await res.text().catch(() => "");
-                    throw new Error(`HTTP ${res.status} ${text.slice(0, 100)}`);
+                let lastErr;
+                for (let i = 0; i <= retries; i++) {
+                    try {
+                        const res = await fetch(url, { cache: "no-store" });
+                        if (!res.ok) {
+                            const text = await res.text().catch(() => "");
+                            throw new Error(
+                                `HTTP ${res.status} ${text.slice(0, 200)}`,
+                            );
+                        }
+                        const text = await res.text();
+                        if (!text) throw new Error("empty response body");
+                        try {
+                            return JSON.parse(text);
+                        } catch (parseErr) {
+                            console.error(
+                                "[admin] JSON parse failed. Raw body (first 500 chars):",
+                                text.slice(0, 500),
+                            );
+                            throw new Error(
+                                "invalid JSON: " + parseErr.message,
+                            );
+                        }
+                    } catch (err) {
+                        lastErr = err;
+                        console.warn(
+                            `[admin] ${path} attempt ${i + 1}/${retries + 1} failed:`,
+                            err.message,
+                        );
+                        if (i < retries)
+                            await new Promise((r) =>
+                                setTimeout(r, 500 * (i + 1)),
+                            );
+                    }
                 }
-                return res.json();
+                throw lastErr;
             }
 
             function fmtTime(ts) {
                 if (!ts) return "—";
-                const d = new Date(ts);
                 const diff = Date.now() - ts;
                 if (diff < 60_000) return "just now";
                 if (diff < 3_600_000)
@@ -404,7 +433,7 @@
                     return Math.floor(diff / 3_600_000) + "h ago";
                 if (diff < 7 * 86_400_000)
                     return Math.floor(diff / 86_400_000) + "d ago";
-                return d.toLocaleDateString();
+                return new Date(ts).toLocaleDateString();
             }
 
             function fmtDate(ts) {
@@ -432,9 +461,10 @@
             }
 
             function userDisplay(u) {
+                if (!u) return "Unknown";
                 if (u.username) return "@" + u.username;
                 if (u.first_name) return u.first_name;
-                return "User " + u.user_id;
+                return "User " + (u.user_id ?? "?");
             }
 
             function showError(msg) {
@@ -442,7 +472,6 @@
                 bar.textContent = msg;
                 bar.classList.add("show");
             }
-
             function clearError() {
                 $("error-bar").classList.remove("show");
             }
@@ -465,6 +494,13 @@
             async function loadUserList() {
                 try {
                     const users = await api("/api/users");
+                    if (!Array.isArray(users)) {
+                        console.error(
+                            "[admin] /api/users did not return array:",
+                            users,
+                        );
+                        throw new Error("expected array, got " + typeof users);
+                    }
                     const list = $("user-list");
                     list.innerHTML = "";
                     if (!users.length) {
@@ -480,7 +516,7 @@
                         row.innerHTML = `
           <div class="name">${esc(userDisplay(u))}</div>
           <div class="meta">
-            <span>${u.answers} answers · ${u.sessions} sessions</span>
+            <span>${u.answers ?? 0} answers · ${u.sessions ?? 0} sessions</span>
             <span>${fmtTime(u.last_seen)}</span>
           </div>
         `;
@@ -491,6 +527,7 @@
                     }
                 } catch (err) {
                     showError("Users failed: " + err.message);
+                    console.error("[admin] loadUserList failed:", err);
                 }
             }
 
@@ -502,19 +539,18 @@
                 await loadUserList();
                 const detail = $("detail");
                 detail.innerHTML = '<div class="empty">Loading…</div>';
-
                 try {
                     const d = await api("/api/user/" + userId);
                     renderDetail(d);
                 } catch (err) {
                     detail.innerHTML = `<div class="empty">Failed to load user: ${esc(err.message)}</div>`;
+                    console.error("[admin] openUser failed:", err);
                 }
             }
 
             function renderDetail(d) {
                 const { user, stats, topics, sessions, messages } = d;
                 const detail = $("detail");
-
                 const strong = topics.filter(
                     (t) => t.accuracy >= 80 && t.total >= 3,
                 );
@@ -527,103 +563,60 @@
         <h2>${esc(userDisplay(user))}</h2>
         <div class="id">id: ${user.user_id} · first seen ${fmtDate(user.first_seen)} · last seen ${fmtTime(user.last_seen)}</div>
       </div>
-
       <div class="cards">
         <div class="card"><div class="label">Accuracy</div><div class="value">${stats.accuracy}%</div></div>
         <div class="card"><div class="label">Answers</div><div class="value">${stats.total_answers}</div></div>
         <div class="card"><div class="label">Correct</div><div class="value">${stats.total_correct}</div></div>
         <div class="card"><div class="label">Sessions</div><div class="value">${stats.sessions}</div></div>
       </div>
-
       ${
           strong.length
-              ? `
-        <h3>Strong areas</h3>
-        ${strong
-            .map(
-                (t) => `
-          <div class="topic-row strong">
-            <span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span>
-            <span class="pct">${t.accuracy}%</span>
-          </div>
-        `,
-            )
-            .join("")}
-      `
+              ? `<h3>Strong areas</h3>${strong
+                    .map(
+                        (t) => `
+        <div class="topic-row strong"><span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span><span class="pct">${t.accuracy}%</span></div>`,
+                    )
+                    .join("")}`
               : ""
       }
-
       ${
           weak.length
-              ? `
-        <h3>Weak areas</h3>
-        ${weak
-            .map(
-                (t) => `
-          <div class="topic-row weak">
-            <span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span>
-            <span class="pct">${t.accuracy}%</span>
-          </div>
-        `,
-            )
-            .join("")}
-      `
+              ? `<h3>Weak areas</h3>${weak
+                    .map(
+                        (t) => `
+        <div class="topic-row weak"><span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span><span class="pct">${t.accuracy}%</span></div>`,
+                    )
+                    .join("")}`
               : ""
       }
-
       ${
           topics.length && !strong.length && !weak.length
-              ? `
-        <h3>Topics</h3>
-        ${topics
-            .map(
-                (t) => `
-          <div class="topic-row">
-            <span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span>
-            <span class="pct">${t.accuracy}%</span>
-          </div>
-        `,
-            )
-            .join("")}
-      `
+              ? `<h3>Topics</h3>${topics
+                    .map(
+                        (t) => `
+        <div class="topic-row"><span>${esc(t.topic)} <span style="color:#9a9a9a">(${t.total} q)</span></span><span class="pct">${t.accuracy}%</span></div>`,
+                    )
+                    .join("")}`
               : ""
       }
-
       <h3>Sessions (${sessions.length})</h3>
       ${
           sessions.length
               ? sessions
                     .map(
                         (s) => `
-        <div class="session-row">
-          <span class="type">${esc(s.type)}</span>
-          <span class="topic">${esc(s.topic || "—")}</span>
-          <span class="score">${s.score ?? "—"}/${s.total_questions ?? "—"}</span>
-          <span class="time">${fmtTime(s.completed_at)}</span>
-        </div>
-      `,
+        <div class="session-row"><span class="type">${esc(s.type)}</span><span class="topic">${esc(s.topic || "—")}</span><span class="score">${s.score ?? "—"}/${s.total_questions ?? "—"}</span><span class="time">${fmtTime(s.completed_at)}</span></div>`,
                     )
                     .join("")
               : '<div style="padding:10px; color:#9a9a9a; font-size:12px;">No sessions yet.</div>'
       }
-
       <h3>Chat history (last ${Math.min(messages.length, 100)})</h3>
       ${
           messages.length
               ? messages
                     .map(
                         (m) => `
-        <div class="msg ${m.role}">
-          <div class="head">
-            <span class="who">${m.role === "user" ? "User" : "Prof"}</span>
-            <span class="time">${fmtDate(m.created_at)}</span>
-          </div>
-          <div class="body">
-            ${m.has_photo ? '<span class="photo-tag">photo</span>' : ""}
-            ${esc(m.content || "")}
-          </div>
-        </div>
-      `,
+        <div class="msg ${m.role}"><div class="head"><span class="who">${m.role === "user" ? "User" : "Prof"}</span><span class="time">${fmtDate(m.created_at)}</span></div><div class="body">${m.has_photo ? '<span class="photo-tag">photo</span>' : ""}${esc(m.content || "")}</div></div>`,
                     )
                     .join("")
               : '<div style="padding:10px; color:#9a9a9a; font-size:12px;">No messages yet.</div>'

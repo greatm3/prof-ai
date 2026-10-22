@@ -3,20 +3,27 @@ import {
     botUsername,
     downloadPhoto,
     streamToTelegram,
+    sendRichOrFallback,
 } from "./telegram.js";
 import { SYSTEM_PROMPT } from "./prompts.js";
 import {
     detectQuizIntent,
     detectFlashcardIntent,
+    detectImageIntent,
     PHOTO_REF,
 } from "./intents.js";
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
 import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
-import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js"; 
-import { buildProgressReport } from "./analytics.js";
-import { sendRichOrFallback } from "./telegram.js";
-import { MAX_CONTEXT_MESSAGES, PHOTO_TTL_MS } from "./config.js";
+import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
 import { upsertUser, logMessage } from "./db.js";
+import { buildProgressReport } from "./analytics.js";
+import { downloadVoice, transcribeVoice } from "./voice.js";
+import { generateDiagram } from "./imagegen.js";
+import {
+    MAX_CONTEXT_MESSAGES,
+    PHOTO_TTL_MS,
+    VOICE_MAX_SECONDS,
+} from "./config.js";
 
 function trimContext(messages) {
     if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
@@ -53,10 +60,12 @@ Just *talk to me normally*. Try:
 • _explain photosynthesis in simple terms_
 • _quiz me on the French Revolution_
 • _flashcards on cellular respiration_
-• send a photo of your homework, then say _"quiz me on this"_
+• *send a photo* of homework, then say _"quiz me on this"_
+• *send a voice note* — I'll transcribe and answer
+• _"draw a free body diagram of a block on a ramp"_
 
 If you get stuck:
-• _how am I doing?_ — see your strengths & weaknesses
+• _how am I doing?_ — strengths & weaknesses
 • \`/reset\` — start fresh`;
 
 const WELCOME_GROUP = `👋 I'm *Prof* — your study partner.
@@ -65,11 +74,12 @@ Mention me (@${botUsername}) or reply to one of my messages, then just *talk nor
 
 • _@${botUsername} quiz me on algebra_
 • _@${botUsername} explain the water cycle_
-• send a photo of your homework, then reply _"quiz me on this"_
+• *send a photo* of homework, then reply _"quiz me on this"_
+• *send a voice note* — I'll transcribe and answer
 
 *Tips:*
 • Quizzes ask ONE question at a time.
-• Ask _"how am I doing?"_ for your progress.`;
+• Ask _"how am I doing?"_ for progress.`;
 
 export function registerHandlers() {
     // ─── Commands ───────────────────────────────────────
@@ -89,7 +99,7 @@ export function registerHandlers() {
     bot.onText(/^\/help/, (msg) => {
         bot.sendMessage(
             msg.chat.id,
-            'Just talk normally — try "quiz me on biology" or "how am I doing?".',
+            'Talk normally, send a photo, or send a voice note. Try "quiz me on biology" or "draw a free body diagram".',
             {
                 reply_to_message_id: msg.message_id,
                 allow_sending_without_reply: true,
@@ -112,8 +122,7 @@ export function registerHandlers() {
 
     bot.onText(/^\/progress/, (msg) => {
         upsertUser(msg.from);
-        const text = buildProgressReport(msg.from.id);
-        sendRichOrFallback(msg.chat.id, text, {
+        sendRichOrFallback(msg.chat.id, buildProgressReport(msg.from.id), {
             reply_to_message_id: msg.message_id,
             allow_sending_without_reply: true,
         }).catch(() => {});
@@ -125,7 +134,7 @@ export function registerHandlers() {
             return bot
                 .sendMessage(
                     msg.chat.id,
-                    "I don't have reasoning saved from my last response.",
+                    "No reasoning saved from the last response.",
                     {
                         reply_to_message_id: msg.message_id,
                         allow_sending_without_reply: true,
@@ -133,11 +142,14 @@ export function registerHandlers() {
                 )
                 .catch(() => {});
         }
-        const text = `🧠 Last reasoning:\n\n${c.lastReasoning.slice(0, 3800)}`;
-        sendRichOrFallback(msg.chat.id, text, {
-            reply_to_message_id: msg.message_id,
-            allow_sending_without_reply: true,
-        }).catch(() => {});
+        sendRichOrFallback(
+            msg.chat.id,
+            `🧠 Last reasoning:\n\n${c.lastReasoning.slice(0, 3800)}`,
+            {
+                reply_to_message_id: msg.message_id,
+                allow_sending_without_reply: true,
+            },
+        ).catch(() => {});
     });
 
     bot.onText(/^\/context/, (msg) => {
@@ -186,7 +198,6 @@ export function registerHandlers() {
         const data = query.data;
         if (!data) return;
         if (query.from) upsertUser(query.from);
-
         if (data.startsWith("flash:")) return handleFlashcardAction(query);
         if (data.startsWith("quiz:")) return handleQuizAnswer(query);
     });
@@ -201,6 +212,7 @@ export function registerHandlers() {
             msg.chat.type === "group" || msg.chat.type === "supergroup";
         const rawText = msg.text || msg.caption || "";
         const isPhoto = !!msg.photo;
+        const isVoice = !!msg.voice;
 
         if (isGroup) {
             const mentioned = rawText.includes("@" + botUsername);
@@ -209,14 +221,84 @@ export function registerHandlers() {
             if (!mentioned && !isReplyToBot) return;
         }
 
-        if (!rawText && !isPhoto) return;
+        if (!rawText && !isPhoto && !isVoice) return;
 
         upsertUser(msg.from);
         const userId = msg.from.id;
-        const cleanText = rawText
+        const chat = getChat(chatId);
+        let cleanText = rawText
             .replace(new RegExp(`@${botUsername}`, "g"), "")
             .trim();
-        const chat = getChat(chatId);
+
+        // ─── Voice note branch ────────────────────────────
+        if (isVoice) {
+            if (msg.voice.duration > VOICE_MAX_SECONDS) {
+                return bot
+                    .sendMessage(
+                        chatId,
+                        `That voice note is ${msg.voice.duration}s — please keep it under ${VOICE_MAX_SECONDS}s.`,
+                        {
+                            reply_to_message_id: msg.message_id,
+                            allow_sending_without_reply: true,
+                        },
+                    )
+                    .catch(() => {});
+            }
+
+            const status = await bot
+                .sendMessage(chatId, "Listening…", {
+                    reply_to_message_id: msg.message_id,
+                    allow_sending_without_reply: true,
+                })
+                .catch(() => null);
+
+            let transcript;
+            try {
+                const buffer = await downloadVoice(msg.voice.file_id);
+                transcript = await transcribeVoice(buffer);
+            } catch (err) {
+                console.error("voice transcription failed:", err.message);
+                if (status)
+                    await bot
+                        .deleteMessage(chatId, status.message_id)
+                        .catch(() => {});
+                return bot
+                    .sendMessage(
+                        chatId,
+                        `Couldn't hear that clearly — try again or type it.`,
+                        {
+                            reply_to_message_id: msg.message_id,
+                            allow_sending_without_reply: true,
+                        },
+                    )
+                    .catch(() => {});
+            }
+
+            if (status)
+                await bot
+                    .deleteMessage(chatId, status.message_id)
+                    .catch(() => {});
+
+            // Show the transcript so the student knows what was heard
+            await bot
+                .sendMessage(chatId, `🎤 _"${transcript}"_`, {
+                    parse_mode: "Markdown",
+                    reply_to_message_id: msg.message_id,
+                    allow_sending_without_reply: true,
+                })
+                .catch(() => {});
+
+            logMessage({
+                chatId,
+                userId,
+                role: "user",
+                content: `[voice] ${transcript}`,
+            });
+
+            // Treat the transcript as if it were typed
+            cleanText = transcript;
+            // fall through to the text branch below
+        }
 
         // ─── Photo branch ─────────────────────────────────
         if (isPhoto) {
@@ -325,10 +407,10 @@ export function registerHandlers() {
             return;
         }
 
-        // ─── Text branch ──────────────────────────────────
+        // ─── Text (or transcribed voice) branch ───────────
         if (!cleanText) return;
 
-        // Reset natural language
+        // Reset
         if (
             /^(?:reset|start\s+over|clear|forget\s+(?:this|everything|that))$/i.test(
                 cleanText,
@@ -347,17 +429,65 @@ export function registerHandlers() {
                 .catch(() => {});
         }
 
-        // Progress natural language
+        // Progress
         if (
             /^(?:how\s+am\s+i\s+doing|my\s+progress|progress|my\s+stats|my\s+analytics|strengths?|weak(?:ness|nesses)?)\b/i.test(
                 cleanText,
             )
         ) {
-            const text = buildProgressReport(userId);
-            return sendRichOrFallback(chatId, text, {
+            return sendRichOrFallback(chatId, buildProgressReport(userId), {
                 reply_to_message_id: msg.message_id,
                 allow_sending_without_reply: true,
             }).catch(() => {});
+        }
+
+        // Image generation (before quiz/flashcards)
+        const imageTopic = detectImageIntent(cleanText);
+        if (imageTopic !== null) {
+            console.log(`Chat ${chatId}: IMAGE → "${imageTopic}"`);
+            const status = await bot
+                .sendMessage(chatId, `Drawing that for you…`, {
+                    reply_to_message_id: msg.message_id,
+                    allow_sending_without_reply: true,
+                })
+                .catch(() => null);
+
+            try {
+                const buffer = await generateDiagram(imageTopic);
+                if (status)
+                    await bot
+                        .deleteMessage(chatId, status.message_id)
+                        .catch(() => {});
+                await bot
+                    .sendPhoto(chatId, buffer, {
+                        caption: `📐 *${imageTopic}*\n\n_Diagram for illustration — check it against your textbook._`,
+                        parse_mode: "Markdown",
+                        reply_to_message_id: msg.message_id,
+                        allow_sending_without_reply: true,
+                    })
+                    .catch(() => {});
+                logMessage({
+                    chatId,
+                    userId,
+                    role: "assistant",
+                    content: `[Generated diagram: ${imageTopic}]`,
+                });
+            } catch (err) {
+                if (status)
+                    await bot
+                        .deleteMessage(chatId, status.message_id)
+                        .catch(() => {});
+                console.error("image gen failed:", err.message);
+                bot.sendMessage(
+                    chatId,
+                    `I couldn't draw that one — try describing it differently, or ask me to explain it in text.`,
+                    {
+                        reply_to_message_id: msg.message_id,
+                        allow_sending_without_reply: true,
+                    },
+                ).catch(() => {});
+            }
+            return;
         }
 
         const replyToPhoto = !!msg.reply_to_message?.photo;

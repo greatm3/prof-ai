@@ -7,36 +7,56 @@ import {
     adminUserList,
     adminRecentSessions,
     adminUserDetail,
+    adminDebug,
 } from "./db.js";
 
 const PUBLIC_DIR = path.join(process.cwd(), "public");
 
 function sendJson(res, status, data) {
+    let body;
     try {
-        const body = JSON.stringify(data);
+        body = JSON.stringify(data);
+    } catch (err) {
+        console.error("[admin.sendJson] serialize failed:", err);
+        body = JSON.stringify({
+            error: "serialization failed: " + err.message,
+        });
+        status = 500;
+    }
+    if (body == null) body = "{}";
+
+    try {
+        const buf = Buffer.from(body, "utf8");
         res.writeHead(status, {
             "Content-Type": "application/json; charset=utf-8",
-            "Content-Length": Buffer.byteLength(body),
+            "Content-Length": buf.length,
             "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
         });
-        res.end(body);
+        res.end(buf);
     } catch (err) {
-        console.error("[admin] JSON serialization failed:", err);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(
-            JSON.stringify({ error: "serialization failed: " + err.message }),
-        );
+        console.error("[admin.sendJson] write failed:", err);
+        try {
+            if (!res.headersSent)
+                res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("error");
+        } catch {
+            /* socket dead */
+        }
     }
 }
 
 export function startAdminServer() {
     const server = http.createServer((req, res) => {
+        const t0 = Date.now();
         const url = new URL(req.url, `http://${req.headers.host}`);
         const token = url.searchParams.get("token");
 
-        console.log(
-            `[admin] ${req.method} ${url.pathname} ${token === ADMIN_PASSWORD ? "(authorized)" : ""}`,
-        );
+        res.on("finish", () => {
+            console.log(
+                `[admin] ${req.method} ${url.pathname} → ${res.statusCode} (${Date.now() - t0}ms)`,
+            );
+        });
 
         if (url.pathname === "/" || url.pathname === "/index.html") {
             const filePath = path.join(PUBLIC_DIR, "admin.html");
@@ -55,18 +75,18 @@ export function startAdminServer() {
             return sendJson(res, 401, { error: "unauthorized" });
 
         try {
-            if (url.pathname === "/api/stats") {
+            if (url.pathname === "/api/stats")
                 return sendJson(res, 200, adminGlobalStats());
-            }
-            if (url.pathname === "/api/users") {
+            if (url.pathname === "/api/users")
                 return sendJson(res, 200, adminUserList());
-            }
-            if (url.pathname === "/api/sessions") {
+            if (url.pathname === "/api/sessions")
                 return sendJson(res, 200, adminRecentSessions(50));
-            }
-            const match = url.pathname.match(/^\/api\/user\/(\d+)$/);
-            if (match) {
-                const detail = adminUserDetail(Number(match[1]));
+            if (url.pathname === "/api/debug")
+                return sendJson(res, 200, adminDebug());
+
+            const m = url.pathname.match(/^\/api\/user\/(\d+)$/);
+            if (m) {
+                const detail = adminUserDetail(Number(m[1]));
                 if (!detail)
                     return sendJson(res, 404, { error: "user not found" });
                 return sendJson(res, 200, detail);
@@ -76,10 +96,11 @@ export function startAdminServer() {
             console.error("[admin] handler error:", err);
             return sendJson(res, 500, {
                 error: err.message,
-                stack: err.stack?.split("\n").slice(0, 3),
+                stack: (err.stack || "").split("\n").slice(0, 3),
             });
         }
     });
+
     server.listen(ADMIN_PORT, () => {
         console.log(
             `✓ Admin: http://localhost:${ADMIN_PORT}?token=${ADMIN_PASSWORD}`,

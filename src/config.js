@@ -5,6 +5,10 @@ export const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 export const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
 export const ADMIN_PORT = Number(process.env.ADMIN_PORT || 3001);
 
+// export const ASR_MODEL = 'nvidia/parakeet-tdt-0.6b-v2';
+export const IMAGE_MODEL = 'black-forest-labs/flux-3-image-klein';
+export const VOICE_MAX_SECONDS = 120;
+
 export const MODEL = 'nvidia/nemotron-3.5-super-vl-120b-a12b';
 export const MAX_CONTEXT_MESSAGES = 20;
 export const QUIZ_QUESTIONS = 10;
