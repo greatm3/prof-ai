@@ -6,6 +6,7 @@ import { getChat, activeQuizzes } from "./state.js";
 import { splitLong } from "./telegram.js";
 import { createSession, completeSession, logAnswer } from "./db.js";
 import { logMessage } from "./db.js";
+import { alertAdmin } from "./alerts.js";
 
 export function buildQuizKeyboard(index) {
     return {
@@ -170,6 +171,7 @@ export async function triggerQuiz(
         if (status)
             await bot.deleteMessage(chatId, status.message_id).catch(() => {});
         console.error("quiz generation error:", err.message);
+        await alertAdmin('quiz generation', err);
         bot.sendMessage(
             chatId,
             `Quiz generation failed: ${err.message.slice(0, 200)}`,

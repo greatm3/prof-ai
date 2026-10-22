@@ -5,6 +5,7 @@ import { parseFlashcards } from "./parsers.js";
 import { getChat, activeDecks } from "./state.js";
 import { createSession, completeSession } from "./db.js";
 import { logMessage } from "./db.js";
+import { alertAdmin } from "./alerts.js";
 
 function buildKeyboard(index, revealed, isLast) {
     if (!revealed) {
@@ -217,6 +218,7 @@ export async function triggerFlashcards(
         if (status)
             await bot.deleteMessage(chatId, status.message_id).catch(() => {});
         console.error("flashcard error:", err.message);
+        await alertAdmin('flashcard', err);
         bot.sendMessage(
             chatId,
             `Flashcard generation failed: ${err.message.slice(0, 200)}`,

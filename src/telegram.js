@@ -3,6 +3,7 @@ import { mdgramRich } from "@borodin/mdgram";
 import { TELEGRAM_BOT_TOKEN } from "./config.js";
 import { randWord } from "./state.js";
 import { nimStream } from "./nim.js";
+import { alertAdmin } from './alerts.js';
 
 export const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
 

@@ -15,7 +15,7 @@ import {
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
 import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
 import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
-import { upsertUser, logMessage } from "./db.js";
+import { upsertUser, getUserInfo } from "./db.js";
 import { buildProgressReport } from "./analytics.js";
 import { downloadVoice, transcribeVoice } from "./voice.js";
 import {
@@ -24,6 +24,8 @@ import {
     VOICE_MAX_SECONDS,
 } from "./config.js";
 import { generateStudyPdf } from "./pdfgen.js";
+import { installGlobalAlertHandlers, alertAdmin } from "./alerts.js";
+import { checkAccess, isAdmin, handleAdminCommand } from "./ops.js";
 
 function trimContext(messages) {
     if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
@@ -42,6 +44,7 @@ async function resolvePhoto(msg, chat) {
             return await downloadPhoto(photo.file_id);
         } catch (err) {
             console.error("resolvePhoto:", err.message);
+            await alertAdmin('resolvePhoto', err);
         }
     }
     if (
@@ -62,7 +65,6 @@ Just *talk to me normally*. Try:
 • _flashcards on cellular respiration_
 • *send a photo* of homework, then say _"quiz me on this"_
 • *send a voice note* — I'll transcribe and answer
-• _"draw a free body diagram of a block on a ramp"_
 
 If you get stuck:
 • _how am I doing?_ — strengths & weaknesses
@@ -82,6 +84,8 @@ Mention me (@${botUsername}) or reply to one of my messages, then just *talk nor
 • Ask _"how am I doing?"_ for progress.`;
 
 export function registerHandlers() {
+    installGlobalAlertHandlers();
+
     // ─── Commands ───────────────────────────────────────
     bot.onText(/^\/start/, (msg) => {
         const isGroup = msg.chat.type !== "private";
@@ -121,7 +125,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/progress/, async (msg) => {
-        await upsertUser(msg.from);
+        if (!(await checkAccess(msg.chat.id, msg.from, msg.message_id))) return;
         sendRichOrFallback(msg.chat.id, buildProgressReport(msg.from.id), {
             reply_to_message_id: msg.message_id,
             allow_sending_without_reply: true,
@@ -174,7 +178,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/quiz(?:\s+(.+))?/, async (msg, match) => {
-        await upsertUser(msg.from);
+        if (!(await checkAccess(msg.chat.id, msg.from, msg.message_id))) return;
         triggerQuiz(
             msg.chat.id,
             msg.message_id,
@@ -184,7 +188,7 @@ export function registerHandlers() {
     });
 
     bot.onText(/^\/flashcards?(?:\s+(.+))?/, async (msg, match) => {
-        await upsertUser(msg.from);
+        if (!(await checkAccess(msg.chat.id, msg.from, msg.message_id))) return;
         triggerFlashcards(
             msg.chat.id,
             msg.message_id,
@@ -197,9 +201,26 @@ export function registerHandlers() {
     bot.on("callback_query", async (query) => {
         const data = query.data;
         if (!data) return;
-        if (query.from) await upsertUser(query.from);
-        if (data.startsWith("flash:")) return handleFlashcardAction(query);
-        if (data.startsWith("quiz:")) return handleQuizAnswer(query);
+        try {
+            const info = await getUserInfo(query.from.id);
+            if (info.blocked) {
+                return bot
+                    .answerCallbackQuery(query.id, {
+                        text: "You've been removed from the beta.",
+                        show_alert: true,
+                    })
+                    .catch(() => {});
+            }
+            await upsertUser(query.from);
+            if (data.startsWith("flash:")) return handleFlashcardAction(query);
+            if (data.startsWith("quiz:")) return handleQuizAnswer(query);
+        } catch (err) {
+            console.error("[callback] error:", err.message);
+            await alertAdmin("callback_query", err);
+            bot.answerCallbackQuery(query.id, {
+                text: "Something went wrong.",
+            }).catch(() => {});
+        }
     });
 
     // ─── Main message handler ───────────────────────────
@@ -221,9 +242,18 @@ export function registerHandlers() {
             if (!mentioned && !isReplyToBot) return;
         }
 
+        if (
+            isAdmin(msg.from?.id) &&
+            /^\/(?:stats|admin|users|limit|kick|unkick|who)\b/i.test(rawText)
+        ) {
+            return handleAdminCommand(msg, rawText);
+        }
+
         if (!rawText && !isPhoto && !isVoice) return;
 
-        await upsertUser(msg.from);
+        const ok = await checkAccess(chatId, msg.from, msg.message_id);
+        if (!ok) return;
+
         const userId = msg.from.id;
         const chat = getChat(chatId);
         let cleanText = rawText
@@ -258,6 +288,7 @@ export function registerHandlers() {
                 transcript = await transcribeVoice(buffer);
             } catch (err) {
                 console.error("voice transcription failed:", err.message);
+                await alertAdmin('voice', err);
                 if (status)
                     await bot
                         .deleteMessage(chatId, status.message_id)
@@ -309,6 +340,7 @@ export function registerHandlers() {
                 base64 = await downloadPhoto(photo.file_id);
             } catch (err) {
                 console.error("photo download error:", err.message);
+                await alertAdmin('photo', err);
                 return bot
                     .sendMessage(
                         chatId,
@@ -403,6 +435,7 @@ export function registerHandlers() {
             } catch (err) {
                 clearInterval(typing);
                 console.error("photo handler:", err.message);
+                await alertAdmin('photo handler', err);
             }
             return;
         }
@@ -435,10 +468,14 @@ export function registerHandlers() {
                 cleanText,
             )
         ) {
-            return sendRichOrFallback(chatId, await buildProgressReport(userId), {
-                reply_to_message_id: msg.message_id,
-                allow_sending_without_reply: true,
-            }).catch(() => {});
+            return sendRichOrFallback(
+                chatId,
+                await buildProgressReport(userId),
+                {
+                    reply_to_message_id: msg.message_id,
+                    allow_sending_without_reply: true,
+                },
+            ).catch(() => {});
         }
 
         const pdfIntent = detectPdfIntent(cleanText);
@@ -519,6 +556,7 @@ export function registerHandlers() {
                         .deleteMessage(chatId, status.message_id)
                         .catch(() => {});
                 console.error("pdf generation failed:", err.message);
+                await alertAdmin('PDF', err);
                 bot.sendMessage(
                     chatId,
                     "I couldn’t build the PDF — try again with a shorter explanation.",
@@ -614,6 +652,7 @@ export function registerHandlers() {
         } catch (err) {
             clearInterval(typing);
             console.error("message handler:", err.message);
+            await alertAdmin('message handler', err);
         }
     });
 

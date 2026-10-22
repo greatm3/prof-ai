@@ -27,3 +27,9 @@ export const THINKING_WORDS = [
   'sketching', 'brewing', 'gathering', 'aligning', 'sensing',
   'soliloquizing', 'daydreaming', 'noodling', 'mulling', 'simmering',
 ];
+
+export const ADMIN_USER_ID = process.env.ADMIN_USER_ID
+    ? Number(process.env.ADMIN_USER_ID)
+    : null;
+
+export const MAX_BETA_USERS = Number(process.env.MAX_BETA_USERS || 20);

@@ -51,6 +51,11 @@ const SCHEMA = [
     `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(started_by_user_id)`,
     `CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, created_at)`,
+
+    `CREATE TABLE IF NOT EXISTS settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )`,
 ];
 
 async function initSchema(attempt = 1) {
@@ -69,6 +74,15 @@ async function initSchema(attempt = 1) {
 }
 
 await initSchema();
+
+try {
+    await db.execute("ALTER TABLE users ADD COLUMN blocked INTEGER DEFAULT 0");
+    console.log("[db] migration: added users.blocked");
+} catch (err) {
+    if (!/duplicate column/i.test(err.message)) {
+        console.error("[db] migration failed:", err.message);
+    }
+}
 
 // ─── Coercion helpers (libSQL returns numbers or bigints) ────────────
 function num(v) {
@@ -457,4 +471,68 @@ export async function adminDebug() {
             stack: (err.stack || "").split("\n").slice(0, 5),
         };
     }
+}
+
+export async function getUserInfo(userId) {
+    const { rows } = await db.execute({
+        sql: "SELECT user_id, blocked FROM users WHERE user_id = ?",
+        args: [userId],
+    });
+    if (!rows[0]) return { exists: false, blocked: false };
+    return { exists: true, blocked: Number(rows[0].blocked) === 1 };
+}
+
+export async function getUserCount() {
+    const { rows } = await db.execute(
+        "SELECT COUNT(*) AS n FROM users WHERE COALESCE(blocked, 0) = 0",
+    );
+    return Number(rows[0]?.n) || 0;
+}
+
+export async function blockUser(userId) {
+    await db.execute({
+        sql: "UPDATE users SET blocked = 1 WHERE user_id = ?",
+        args: [userId],
+    });
+}
+
+export async function unblockUser(userId) {
+    await db.execute({
+        sql: "UPDATE users SET blocked = 0 WHERE user_id = ?",
+        args: [userId],
+    });
+}
+
+export async function getSetting(key) {
+    const { rows } = await db.execute({
+        sql: "SELECT value FROM settings WHERE key = ?",
+        args: [key],
+    });
+    return rows[0]?.value ?? null;
+}
+
+export async function setSetting(key, value) {
+    await db.execute({
+        sql: "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        args: [key, String(value)],
+    });
+}
+
+export async function getMaxUsers() {
+    const v = await getSetting("max_users");
+    if (v) return Number(v);
+    return Number(process.env.MAX_BETA_USERS || 20);
+}
+
+export async function listUsersForAdmin() {
+    const { rows } = await db.execute(
+        `SELECT user_id, username, first_name, blocked
+         FROM users ORDER BY last_seen DESC LIMIT 100`,
+    );
+    return Array.from(rows || []).map((r) => ({
+        user_id: num(r.user_id),
+        username: str(r.username),
+        first_name: str(r.first_name),
+        blocked: num(r.blocked),
+    }));
 }
