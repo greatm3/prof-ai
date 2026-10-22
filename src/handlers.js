@@ -8,8 +8,7 @@ import {
 import { SYSTEM_PROMPT } from "./prompts.js";
 import {
     detectQuizIntent,
-    detectFlashcardIntent,
-    detectImageIntent,
+    detectFlashcardIntent, 
     PHOTO_REF,
 } from "./intents.js";
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
@@ -17,8 +16,7 @@ import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
 import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
 import { upsertUser, logMessage } from "./db.js";
 import { buildProgressReport } from "./analytics.js";
-import { downloadVoice, transcribeVoice } from "./voice.js";
-import { generateDiagram } from "./imagegen.js";
+import { downloadVoice, transcribeVoice } from "./voice.js"; 
 import {
     MAX_CONTEXT_MESSAGES,
     PHOTO_TTL_MS,
