@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Prof · Admin</title>
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            :root {
+                --bg: #fff;
+                --text: #0a0a0a;
+                --dim: #5a5a5a;
+                --muted: #9a9a9a;
+                --grid: rgba(0, 0, 0, 0.05);
+                --surface: #f4f4f4;
+            }
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+                border-radius: 0 !important;
+            }
+            body {
+                font-family: "Inter", sans-serif;
+                font-size: 14px;
+                color: var(--text);
+                background-color: var(--bg);
+                background-image:
+                    linear-gradient(var(--grid) 1px, transparent 1px),
+                    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+                background-size: 46px 46px;
+                min-height: 100vh;
+                padding: 32px;
+            }
+            .wrap {
+                max-width: 1100px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                font-weight: 700;
+                letter-spacing: -0.5px;
+                margin-bottom: 4px;
+            }
+            .sub {
+                color: var(--dim);
+                font-size: 13px;
+                margin-bottom: 24px;
+            }
+            .cards {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                gap: 12px;
+                margin-bottom: 24px;
+            }
+            .card {
+                background: var(--surface);
+                padding: 16px;
+            }
+            .card .label {
+                font-size: 11px;
+                color: var(--muted);
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin-bottom: 6px;
+            }
+            .card .value {
+                font-size: 24px;
+                font-weight: 700;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                background: #fff;
+            }
+            th,
+            td {
+                padding: 10px 12px;
+                text-align: left;
+                font-size: 13px;
+                border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+            }
+            th {
+                background: var(--surface);
+                font-weight: 600;
+                font-size: 11px;
+                text-transform: uppercase;
+                color: var(--dim);
+            }
+            .error {
+                padding: 16px;
+                background: #fee;
+                color: #c00;
+                margin-bottom: 16px;
+            }
+            .row {
+                display: flex;
+                justify-content: space-between;
+                align-items: baseline;
+                margin-bottom: 12px;
+            }
+            .refresh {
+                font-size: 12px;
+                color: var(--dim);
+                cursor: pointer;
+            }
+            .refresh:hover {
+                color: var(--text);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="wrap">
+            <div class="row">
+                <div>
+                    <h1>Prof · Admin</h1>
+                    <div class="sub" id="sub">Loading…</div>
+                </div>
+                <div class="refresh" onclick="loadAll()">↻ refresh</div>
+            </div>
+            <div id="error" class="error" style="display: none"></div>
+            <div class="cards" id="cards"></div>
+            <h3 style="font-size: 14px; margin-bottom: 8px">Users</h3>
+            <table id="users-table">
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Answers</th>
+                        <th>Accuracy</th>
+                        <th>Last seen</th>
+                    </tr>
+                </thead>
+                <tbody id="users"></tbody>
+            </table>
+            <h3 style="font-size: 14px; margin: 24px 0 8px">Recent Sessions</h3>
+            <table id="sessions-table">
+                <thead>
+                    <tr>
+                        <th>When</th>
+                        <th>User</th>
+                        <th>Type</th>
+                        <th>Topic</th>
+                        <th>Score</th>
+                    </tr>
+                </thead>
+                <tbody id="sessions"></tbody>
+            </table>
+        </div>
+
+        <script>
+            const token =
+                new URLSearchParams(location.search).get("token") || "";
+            const $ = (id) => document.getElementById(id);
+
+            async function api(path) {
+                const url =
+                    path +
+                    (path.includes("?") ? "&" : "?") +
+                    "token=" +
+                    encodeURIComponent(token);
+                const r = await fetch(url);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            }
+
+            function fmt(ts) {
+                if (!ts) return "—";
+                const d = new Date(ts);
+                const diff = Date.now() - ts;
+                if (diff < 60_000) return "just now";
+                if (diff < 3_600_000)
+                    return `${Math.floor(diff / 60_000)}m ago`;
+                if (diff < 86_400_000)
+                    return `${Math.floor(diff / 3_600_000)}h ago`;
+                return d.toLocaleDateString();
+            }
+
+            function esc(s) {
+                return String(s ?? "").replace(
+                    /[&<>"']/g,
+                    (c) =>
+                        ({
+                            "&": "&amp;",
+                            "<": "&lt;",
+                            ">": "&gt;",
+                            '"': "&quot;",
+                            "'": "&#39;",
+                        })[c],
+                );
+            }
+
+            async function loadAll() {
+                try {
+                    $("error").style.display = "none";
+                    const stats = await api("/api/stats");
+                    $("sub").textContent =
+                        `Updated ${new Date().toLocaleTimeString()}`;
+                    $("cards").innerHTML = `
+        <div class="card"><div class="label">Users</div><div class="value">${stats.users}</div></div>
+        <div class="card"><div class="label">Active 24h</div><div class="value">${stats.active_24h}</div></div>
+        <div class="card"><div class="label">Sessions</div><div class="value">${stats.sessions}</div></div>
+        <div class="card"><div class="label">Answers</div><div class="value">${stats.answers}</div></div>
+      `;
+
+                    const users = await api("/api/users");
+                    $("users").innerHTML =
+                        users
+                            .map((u) => {
+                                const name = u.username
+                                    ? "@" + u.username
+                                    : u.first_name || "User " + u.user_id;
+                                return `<tr><td>${esc(name)}</td><td>${u.answers}</td><td>${u.accuracy}%</td><td>${fmt(u.last_seen)}</td></tr>`;
+                            })
+                            .join("") ||
+                        '<tr><td colspan="4" style="color:#9a9a9a">No users yet.</td></tr>';
+
+                    const sessions = await api("/api/sessions");
+                    $("sessions").innerHTML =
+                        sessions
+                            .map((s) => {
+                                const name = s.username
+                                    ? "@" + s.username
+                                    : s.first_name || "anon";
+                                const score =
+                                    s.score != null
+                                        ? `${s.score}/${s.total_questions}`
+                                        : "—";
+                                return `<tr><td>${fmt(s.completed_at)}</td><td>${esc(name)}</td><td>${esc(s.type)}</td><td>${esc(s.topic || "—")}</td><td>${score}</td></tr>`;
+                            })
+                            .join("") ||
+                        '<tr><td colspan="5" style="color:#9a9a9a">No sessions yet.</td></tr>';
+                } catch (err) {
+                    $("error").textContent =
+                        "Failed to load: " +
+                        err.message +
+                        " (check token in URL)";
+                    $("error").style.display = "block";
+                }
+            }
+
+            loadAll();
+            setInterval(loadAll, 15000);
+        </script>
+    </body>
+</html>

@@ -1,0 +1,439 @@
+import {
+    bot,
+    botUsername,
+    downloadPhoto,
+    streamToTelegram,
+} from "./telegram.js";
+import { SYSTEM_PROMPT } from "./prompts.js";
+import {
+    detectQuizIntent,
+    detectFlashcardIntent,
+    PHOTO_REF,
+} from "./intents.js";
+import { getChat, activeQuizzes, activeDecks } from "./state.js";
+import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
+import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
+import { upsertUser } from "./db.js";
+import { buildProgressReport } from "./analytics.js";
+import { sendRichOrFallback } from "./telegram.js";
+import { MAX_CONTEXT_MESSAGES, PHOTO_TTL_MS } from "./config.js";
+
+function trimContext(messages) {
+    if (messages.length <= MAX_CONTEXT_MESSAGES) return messages;
+    const system = messages[0];
+    const rest = messages.slice(1);
+    return [system, ...rest.slice(rest.length - (MAX_CONTEXT_MESSAGES - 1))];
+}
+
+async function resolvePhoto(msg, chat) {
+    if (msg.reply_to_message?.photo) {
+        try {
+            const photo =
+                msg.reply_to_message.photo[
+                    msg.reply_to_message.photo.length - 1
+                ];
+            return await downloadPhoto(photo.file_id);
+        } catch (err) {
+            console.error("resolvePhoto:", err.message);
+        }
+    }
+    if (
+        chat.lastPhoto &&
+        Date.now() - chat.lastPhoto.timestamp < PHOTO_TTL_MS
+    ) {
+        return chat.lastPhoto.base64;
+    }
+    return null;
+}
+
+const WELCOME_PRIVATE = `👋 I'm *Prof* — your study partner.
+
+Just *talk to me normally*. Try:
+
+• _explain photosynthesis in simple terms_
+• _quiz me on the French Revolution_
+• _flashcards on cellular respiration_
+• send a photo of your homework, then say _"quiz me on this"_
+
+If you get stuck:
+• _how am I doing?_ — see your strengths & weaknesses
+• \`/reset\` — start fresh`;
+
+const WELCOME_GROUP = `👋 I'm *Prof* — your study partner.
+
+Mention me (@${botUsername}) or reply to one of my messages, then just *talk normally*. Try:
+
+• _@${botUsername} quiz me on algebra_
+• _@${botUsername} explain the water cycle_
+• send a photo of your homework, then reply _"quiz me on this"_
+
+*Tips:*
+• Quizzes ask ONE question at a time.
+• Ask _"how am I doing?"_ for your progress.`;
+
+export function registerHandlers() {
+    // ─── Commands ───────────────────────────────────────
+    bot.onText(/^\/start/, (msg) => {
+        const isGroup = msg.chat.type !== "private";
+        bot.sendMessage(
+            msg.chat.id,
+            isGroup ? WELCOME_GROUP : WELCOME_PRIVATE,
+            {
+                parse_mode: "Markdown",
+                reply_to_message_id: msg.message_id,
+                allow_sending_without_reply: true,
+            },
+        ).catch(() => {});
+    });
+
+    bot.onText(/^\/help/, (msg) => {
+        bot.sendMessage(
+            msg.chat.id,
+            'Just talk normally — try "quiz me on biology" or "how am I doing?".',
+            {
+                reply_to_message_id: msg.message_id,
+                allow_sending_without_reply: true,
+            },
+        ).catch(() => {});
+    });
+
+    bot.onText(/^\/reset/, (msg) => {
+        const c = getChat(msg.chat.id);
+        c.messages = [];
+        c.lastReasoning = "";
+        c.lastPhoto = null;
+        activeQuizzes.delete(msg.chat.id);
+        activeDecks.delete(msg.chat.id);
+        bot.sendMessage(msg.chat.id, "Fresh slate. What are we working on?", {
+            reply_to_message_id: msg.message_id,
+            allow_sending_without_reply: true,
+        }).catch(() => {});
+    });
+
+    bot.onText(/^\/progress/, (msg) => {
+        upsertUser(msg.from);
+        const text = buildProgressReport(msg.from.id);
+        sendRichOrFallback(msg.chat.id, text, {
+            reply_to_message_id: msg.message_id,
+            allow_sending_without_reply: true,
+        }).catch(() => {});
+    });
+
+    bot.onText(/^\/why/, (msg) => {
+        const c = getChat(msg.chat.id);
+        if (!c.lastReasoning) {
+            return bot
+                .sendMessage(
+                    msg.chat.id,
+                    "I don't have reasoning saved from my last response.",
+                    {
+                        reply_to_message_id: msg.message_id,
+                        allow_sending_without_reply: true,
+                    },
+                )
+                .catch(() => {});
+        }
+        const text = `🧠 Last reasoning:\n\n${c.lastReasoning.slice(0, 3800)}`;
+        sendRichOrFallback(msg.chat.id, text, {
+            reply_to_message_id: msg.message_id,
+            allow_sending_without_reply: true,
+        }).catch(() => {});
+    });
+
+    bot.onText(/^\/context/, (msg) => {
+        const chat = getChat(msg.chat.id);
+        const turns = chat.messages.length;
+        const chars = chat.messages.reduce((n, m) => {
+            if (typeof m.content === "string") return n + m.content.length;
+            if (Array.isArray(m.content))
+                return (
+                    n + m.content.reduce((k, p) => k + (p.text?.length || 0), 0)
+                );
+            return n;
+        }, 0);
+        bot.sendMessage(
+            msg.chat.id,
+            `📊 Memory: ${turns} messages (~${chars} chars). /reset clears it.`,
+            {
+                reply_to_message_id: msg.message_id,
+                allow_sending_without_reply: true,
+            },
+        ).catch(() => {});
+    });
+
+    bot.onText(/^\/quiz(?:\s+(.+))?/, (msg, match) => {
+        upsertUser(msg.from);
+        triggerQuiz(
+            msg.chat.id,
+            msg.message_id,
+            (match[1] || "").trim(),
+            msg.from.id,
+        );
+    });
+
+    bot.onText(/^\/flashcards?(?:\s+(.+))?/, (msg, match) => {
+        upsertUser(msg.from);
+        triggerFlashcards(
+            msg.chat.id,
+            msg.message_id,
+            (match[1] || "").trim(),
+            msg.from.id,
+        );
+    });
+
+    // ─── Callback queries ───────────────────────────────
+    bot.on("callback_query", async (query) => {
+        const data = query.data;
+        if (!data) return;
+        if (query.from) upsertUser(query.from);
+
+        if (data.startsWith("flash:")) return handleFlashcardAction(query);
+        if (data.startsWith("quiz:")) return handleQuizAnswer(query);
+    });
+
+    // ─── Main message handler ───────────────────────────
+    bot.on("message", async (msg) => {
+        if (msg.from?.is_bot) return;
+        if (msg.text?.startsWith("/")) return;
+
+        const chatId = msg.chat.id;
+        const isGroup =
+            msg.chat.type === "group" || msg.chat.type === "supergroup";
+        const rawText = msg.text || msg.caption || "";
+        const isPhoto = !!msg.photo;
+
+        if (isGroup) {
+            const mentioned = rawText.includes("@" + botUsername);
+            const isReplyToBot =
+                msg.reply_to_message?.from?.username === botUsername;
+            if (!mentioned && !isReplyToBot) return;
+        }
+
+        if (!rawText && !isPhoto) return;
+
+        upsertUser(msg.from);
+        const userId = msg.from.id;
+        const cleanText = rawText
+            .replace(new RegExp(`@${botUsername}`, "g"), "")
+            .trim();
+        const chat = getChat(chatId);
+
+        // ─── Photo branch ─────────────────────────────────
+        if (isPhoto) {
+            const photo = msg.photo[msg.photo.length - 1];
+            let base64;
+            try {
+                bot.sendChatAction(chatId, "upload_photo").catch(() => {});
+                base64 = await downloadPhoto(photo.file_id);
+            } catch (err) {
+                console.error("photo download error:", err.message);
+                return bot
+                    .sendMessage(
+                        chatId,
+                        `Couldn't download that photo: ${err.message}`,
+                        {
+                            reply_to_message_id: msg.message_id,
+                            allow_sending_without_reply: true,
+                        },
+                    )
+                    .catch(() => {});
+            }
+
+            chat.lastPhoto = { base64, timestamp: Date.now() };
+
+            if (cleanText) {
+                const flashTopic = detectFlashcardIntent(cleanText);
+                if (flashTopic !== null) {
+                    console.log(
+                        `Chat ${chatId}: PHOTO + FLASHCARD → "${flashTopic || "(from image)"}"`,
+                    );
+                    return triggerFlashcards(
+                        chatId,
+                        msg.message_id,
+                        flashTopic,
+                        userId,
+                        base64,
+                    );
+                }
+                const quizTopic = detectQuizIntent(cleanText);
+                if (quizTopic !== null) {
+                    console.log(
+                        `Chat ${chatId}: PHOTO + QUIZ → "${quizTopic || "(from image)"}"`,
+                    );
+                    return triggerQuiz(
+                        chatId,
+                        msg.message_id,
+                        quizTopic,
+                        userId,
+                        base64,
+                    );
+                }
+            }
+
+            chat.messages.push({
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text:
+                            cleanText ||
+                            "What is in this image? Summarize it and point out anything important.",
+                    },
+                    {
+                        type: "image_url",
+                        image_url: { url: `data:image/jpeg;base64,${base64}` },
+                    },
+                ],
+            });
+
+            bot.sendChatAction(chatId, "typing").catch(() => {});
+            const typing = setInterval(
+                () => bot.sendChatAction(chatId, "typing").catch(() => {}),
+                4500,
+            );
+            try {
+                const result = await streamToTelegram(chatId, msg.message_id, [
+                    { role: "system", content: SYSTEM_PROMPT },
+                    ...trimContext(chat.messages),
+                ]);
+                clearInterval(typing);
+                if (result.content) {
+                    chat.messages.push({
+                        role: "assistant",
+                        content: result.content,
+                    });
+                    chat.lastReasoning = result.reasoning;
+                } else chat.messages.pop();
+            } catch (err) {
+                clearInterval(typing);
+                console.error("photo handler:", err.message);
+            }
+            return;
+        }
+
+        // ─── Text branch ──────────────────────────────────
+        if (!cleanText) return;
+
+        // Reset natural language
+        if (
+            /^(?:reset|start\s+over|clear|forget\s+(?:this|everything|that))$/i.test(
+                cleanText,
+            )
+        ) {
+            chat.messages = [];
+            chat.lastReasoning = "";
+            chat.lastPhoto = null;
+            activeQuizzes.delete(chatId);
+            activeDecks.delete(chatId);
+            return bot
+                .sendMessage(chatId, "Cleared. What are we working on?", {
+                    reply_to_message_id: msg.message_id,
+                    allow_sending_without_reply: true,
+                })
+                .catch(() => {});
+        }
+
+        // Progress natural language
+        if (
+            /^(?:how\s+am\s+i\s+doing|my\s+progress|progress|my\s+stats|my\s+analytics|strengths?|weak(?:ness|nesses)?)\b/i.test(
+                cleanText,
+            )
+        ) {
+            const text = buildProgressReport(userId);
+            return sendRichOrFallback(chatId, text, {
+                reply_to_message_id: msg.message_id,
+                allow_sending_without_reply: true,
+            }).catch(() => {});
+        }
+
+        const replyToPhoto = !!msg.reply_to_message?.photo;
+        const isReplyToBot =
+            msg.reply_to_message?.from?.username === botUsername;
+
+        const flashTopic = detectFlashcardIntent(cleanText);
+        if (flashTopic !== null) {
+            const isPhotoRef = PHOTO_REF.test((flashTopic || "").trim());
+            if (isPhotoRef || replyToPhoto || isReplyToBot) {
+                const base64 = await resolvePhoto(msg, chat);
+                if (base64) {
+                    console.log(`Chat ${chatId}: TEXT → PHOTO FLASHCARD`);
+                    return triggerFlashcards(
+                        chatId,
+                        msg.message_id,
+                        null,
+                        userId,
+                        base64,
+                    );
+                }
+            }
+            console.log(
+                `Chat ${chatId}: FLASHCARD → "${flashTopic || "(general)"}"`,
+            );
+            return triggerFlashcards(
+                chatId,
+                msg.message_id,
+                flashTopic,
+                userId,
+            );
+        }
+
+        const quizTopic = detectQuizIntent(cleanText);
+        if (quizTopic !== null) {
+            const isPhotoRef = PHOTO_REF.test((quizTopic || "").trim());
+            if (isPhotoRef || replyToPhoto || isReplyToBot) {
+                const base64 = await resolvePhoto(msg, chat);
+                if (base64) {
+                    console.log(`Chat ${chatId}: TEXT → PHOTO QUIZ`);
+                    return triggerQuiz(
+                        chatId,
+                        msg.message_id,
+                        null,
+                        userId,
+                        base64,
+                    );
+                }
+            }
+            console.log(`Chat ${chatId}: QUIZ → "${quizTopic || "(general)"}"`);
+            return triggerQuiz(chatId, msg.message_id, quizTopic, userId);
+        }
+
+        // Normal chat
+        console.log(`Chat ${chatId}: normal → "${cleanText.slice(0, 50)}"`);
+        chat.messages.push({ role: "user", content: cleanText });
+
+        bot.sendChatAction(chatId, "typing").catch(() => {});
+        const typing = setInterval(
+            () => bot.sendChatAction(chatId, "typing").catch(() => {}),
+            4500,
+        );
+        try {
+            const result = await streamToTelegram(chatId, msg.message_id, [
+                { role: "system", content: SYSTEM_PROMPT },
+                ...trimContext(chat.messages),
+            ]);
+            clearInterval(typing);
+            if (result.content) {
+                chat.messages.push({
+                    role: "assistant",
+                    content: result.content,
+                });
+                chat.lastReasoning = result.reasoning;
+            } else chat.messages.pop();
+        } catch (err) {
+            clearInterval(typing);
+            console.error("message handler:", err.message);
+        }
+    });
+
+    // ─── Errors ─────────────────────────────────────────
+    bot.on("polling_error", (err) =>
+        console.error("polling_error:", err.code || err.message),
+    );
+    process.on("SIGINT", () => {
+        console.log("\nShutting down Prof…");
+        bot.stopPolling().finally(() => process.exit(0));
+    });
+    process.on("unhandledRejection", (err) =>
+        console.error("unhandledRejection:", err),
+    );
+}
