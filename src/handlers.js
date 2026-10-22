@@ -15,7 +15,7 @@ import {
 import { getChat, activeQuizzes, activeDecks } from "./state.js";
 import { triggerQuiz, handleQuizAnswer } from "./quiz.js";
 import { triggerFlashcards, handleFlashcardAction } from "./flashcards.js";
-import { upsertUser, getUserInfo } from "./db.js";
+import { upsertUser, getUserInfo, logMessage } from "./db.js";
 import { buildProgressReport } from "./analytics.js";
 import { downloadVoice, transcribeVoice } from "./voice.js";
 import {
