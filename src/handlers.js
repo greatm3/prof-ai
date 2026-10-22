@@ -44,7 +44,7 @@ async function resolvePhoto(msg, chat) {
             return await downloadPhoto(photo.file_id);
         } catch (err) {
             console.error("resolvePhoto:", err.message);
-            await alertAdmin('resolvePhoto', err);
+            await alertAdmin("resolvePhoto", err);
         }
     }
     if (
@@ -84,6 +84,21 @@ Mention me (@${botUsername}) or reply to one of my messages, then just *talk nor
 • Ask _"how am I doing?"_ for progress.`;
 
 export function registerHandlers() {
+    bot.onText(
+        /^\/(?:stats|admin|users|limit|kick|unkick|who)\b/,
+        async (msg) => {
+            if (!isAdmin(msg.from?.id)) {
+                return bot
+                    .sendMessage(msg.chat.id, "Unknown command.", {
+                        reply_to_message_id: msg.message_id,
+                        allow_sending_without_reply: true,
+                    })
+                    .catch(() => {});
+            }
+            return handleAdminCommand(msg, msg.text);
+        },
+    );
+
     installGlobalAlertHandlers();
 
     // ─── Commands ───────────────────────────────────────
@@ -240,14 +255,7 @@ export function registerHandlers() {
             const isReplyToBot =
                 msg.reply_to_message?.from?.username === botUsername;
             if (!mentioned && !isReplyToBot) return;
-        }
-
-        if (
-            isAdmin(msg.from?.id) &&
-            /^\/(?:stats|admin|users|limit|kick|unkick|who)\b/i.test(rawText)
-        ) {
-            return handleAdminCommand(msg, rawText);
-        }
+        } 
 
         if (!rawText && !isPhoto && !isVoice) return;
 
@@ -288,7 +296,7 @@ export function registerHandlers() {
                 transcript = await transcribeVoice(buffer);
             } catch (err) {
                 console.error("voice transcription failed:", err.message);
-                await alertAdmin('voice', err);
+                await alertAdmin("voice", err);
                 if (status)
                     await bot
                         .deleteMessage(chatId, status.message_id)
@@ -340,7 +348,7 @@ export function registerHandlers() {
                 base64 = await downloadPhoto(photo.file_id);
             } catch (err) {
                 console.error("photo download error:", err.message);
-                await alertAdmin('photo', err);
+                await alertAdmin("photo", err);
                 return bot
                     .sendMessage(
                         chatId,
@@ -435,7 +443,7 @@ export function registerHandlers() {
             } catch (err) {
                 clearInterval(typing);
                 console.error("photo handler:", err.message);
-                await alertAdmin('photo handler', err);
+                await alertAdmin("photo handler", err);
             }
             return;
         }
@@ -556,7 +564,7 @@ export function registerHandlers() {
                         .deleteMessage(chatId, status.message_id)
                         .catch(() => {});
                 console.error("pdf generation failed:", err.message);
-                await alertAdmin('PDF', err);
+                await alertAdmin("PDF", err);
                 bot.sendMessage(
                     chatId,
                     "I couldn’t build the PDF — try again with a shorter explanation.",
@@ -652,7 +660,7 @@ export function registerHandlers() {
         } catch (err) {
             clearInterval(typing);
             console.error("message handler:", err.message);
-            await alertAdmin('message handler', err);
+            await alertAdmin("message handler", err);
         }
     });
 
